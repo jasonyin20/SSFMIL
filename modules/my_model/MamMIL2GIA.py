@@ -23,7 +23,7 @@ from einops import rearrange, repeat
 import math
 from timm.models.layers import trunc_normal_, lecun_normal_
 
-from modules.four_path_mamba_v2.mamba.mamba_ssm.modules.Direct_Mamba_v1 import Direct_Mamba_v1
+from modules.my_model.mamba.mamba_ssm.modules.Direct_Mamba_v1 import Direct_Mamba_v1
 
 
 # https://github.com/huggingface/transformers/blob/c28d04e9e252a1a099944e325685f14d242ecdcd/src/transformers/models/gpt2/modeling_gpt2.py#L454

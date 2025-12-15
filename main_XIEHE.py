@@ -26,7 +26,7 @@ from collections import OrderedDict
 
 from modules.DyHG import DyHG
 from modules.clam_with_DyHG import clam_DyHG
-#from modules.four_path_mamba_v2 import TransMIL_4_path
+#from modules.my_model import TransMIL_4_path
 from modules.mdmil import mdmil
 from modules.mdmil.hm import HybridMemory
 from utils import *
@@ -137,7 +137,7 @@ def one_fold(args, k, ckc_metric, train_p, train_l, test_p, test_l, val_p, val_l
         #model = attmil.DAttention(n_classes=args.n_classes,dropout=args.dropout,act=args.act).to(device)
 
 
-        from modules.four_path_mamba_v2 import attmil_mamba
+        from modules.my_model import attmil_mamba
 
         model = attmil_mamba.DAttention_v2_mamba(n_classes=args.n_classes, dropout=args.dropout, act=args.act).to(
             device)
@@ -155,7 +155,7 @@ def one_fold(args, k, ckc_metric, train_p, train_l, test_p, test_l, val_p, val_l
 
 
 
-       from modules.four_path_mamba_v2 import clam_mamba_4_path
+       from modules.my_model import clam_mamba_4_path
        model = clam_mamba_4_path.CLAM_MB_four_path(n_classes=args.n_classes, dropout=args.dropout, act=args.act).to(device)
 
         # model_path = '/home/wuyi/RRT_MIL/result/cam16_PLIP/clam_four_path_mamba_efft/fold_' + str(k)+'_model_best_auc.pt'
@@ -735,7 +735,7 @@ if __name__ == '__main__':
     parser.add_argument('--log_iter', default=100, type=int, help='Log Frequency')
     args = parser.parse_args()
 
-    args.model_path = r'D:\SSF_MIL_V2_COPY\Result\2021\NSCLC\clam_mb_SSF_without_fusion_r50_SEED_2021_5'
+    args.model_path = r'F:\SSFMIL\Result\2021\NSCLC\clam_mb_SSF_without_fusion_r50_SEED_2021_5'
 
     if not os.path.exists(args.model_path):
         os.mkdir(args.model_path)

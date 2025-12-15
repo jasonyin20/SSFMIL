@@ -21,7 +21,7 @@ from timm.models import  model_parameters
 from collections import OrderedDict
 
 from modules.DyHG import DyHG
-#from modules.four_path_mamba_v2 import TransMIL_4_path
+#from modules.my_model import TransMIL_4_path
 from modules.mdmil import mdmil
 from modules.mdmil.hm import HybridMemory
 from utils import *
@@ -126,7 +126,7 @@ def one_fold(args, k, ckc_metric, train_p, train_l, test_p, test_l, val_p, val_l
     if args.model == 'attmil':
         #model = attmil.DAttention(n_classes=args.n_classes,dropout=args.dropout,act=args.act).to(device)
 
-        from modules.four_path_mamba_v2 import attmil_mamba
+        from modules.my_model import attmil_mamba
         #
         model = attmil_mamba.DAttention_v2_mamba(n_classes=args.n_classes, dropout=args.dropout, act=args.act).to(
              device)
@@ -143,7 +143,7 @@ def one_fold(args, k, ckc_metric, train_p, train_l, test_p, test_l, val_p, val_l
         #model = clam.CLAM_MB(n_classes=args.n_classes,dropout=args.dropout,act=args.act).to(device)
 
 
-        from modules.four_path_mamba_v2 import clam_mamba_4_path
+        from modules.my_model import clam_mamba_4_path
         model = clam_mamba_4_path.CLAM_MB_four_path(n_classes=args.n_classes, dropout=args.dropout, act=args.act).to(device)
 
     elif args.model == 'transmil':

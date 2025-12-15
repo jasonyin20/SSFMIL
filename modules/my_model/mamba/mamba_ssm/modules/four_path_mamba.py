@@ -3,6 +3,7 @@
 import math
 from typing import Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,7 +11,7 @@ from torch import Tensor
 
 from einops import rearrange, repeat
 
-from modules.four_path_mamba_v2.mamba.mamba_ssm.ops.selective_scan_interface import selective_scan_fn, mamba_inner_fn, mamba_inner_fn_no_out_proj
+from modules.my_model.mamba.mamba_ssm.ops.selective_scan_interface import selective_scan_fn, mamba_inner_fn, mamba_inner_fn_no_out_proj
 
 try:
     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -30,36 +31,135 @@ except ImportError:
 from einops import rearrange
 
 class TransposeTokenReEmbedding:
-    @staticmethod
-    def transpose_normal_padding(x, rate):
-        x = rearrange(x, "b c l -> b l c")
-        B, N, C = x.shape
-        value = N // rate
-        if N % rate != 0:
-            padding_length = (value + 1) * rate - N
-            padded_x = torch.nn.functional.pad(x, (0, 0, 0, padding_length))
-        else:
-            padded_x = x
-        x_ = rearrange(padded_x, "b (k w) d -> b (w k) d", w = rate)
-        x_ = rearrange(x_, "b l c -> b c l")
-        return x_
+    #@staticmethod
+    # def transpose_normal_padding(x, rate):
+    #     x = rearrange(x, "b c l -> b l c")
+    #     B, N, C = x.shape
+    #     value = N // rate
+    #     if N % rate != 0:
+    #         padding_length = (value + 1) * rate - N
+    #         padded_x = torch.nn.functional.pad(x, (0, 0, 0, padding_length))
+    #     else:
+    #         padded_x = x
+    #     x_ = rearrange(padded_x, "b (k w) d -> b (w k) d", w = rate)
+    #     x_ = rearrange(x_, "b l c -> b c l")
+    #     return x_
+    #
+    # @staticmethod
+    # def transpose_remove_padding(x, rate, length):
+    #     x = rearrange(x, "b c l -> b l c")
+    #     x = rearrange(x, "b (w k) d -> b (k w) d", w = rate)
+    #     x = x[:,:length,:]
+    #     x = rearrange(x, "b l c -> b c l")
+    #     return x
+
+
+
 
     @staticmethod
-    def transpose_remove_padding(x, rate, length):
-        x = rearrange(x, "b c l -> b l c")
-        x = rearrange(x, "b (w k) d -> b (k w) d", w = rate)
-        x = x[:,:length,:]
-        x = rearrange(x, "b l c -> b c l")
+    def antidiagonal_gather(x, _H, _W):
+        B, H, C = x.shape
+        x = x.transpose(1, 2).view(B, C, _H, _W)
+        # 取出矩阵所有反斜向的元素并拼接
+        B, C, H, W = x.size()
+        shift = torch.arange(H, device=x.device).unsqueeze(1)  # 创建一个列向量[H, 1]
+        index = (torch.arange(W, device=x.device) - shift) % W  # 利用广播创建索引矩阵[H, W]
+        # 扩展索引以适应B和C维度
+        expanded_index = index.unsqueeze(0).unsqueeze(0).expand(B, C, -1, -1)
+        # 使用gather进行索引选择
+        x=x.gather(3, expanded_index).transpose(-1, -2).reshape(B, C, H * W)
+        #print(x.shape)
+        return x
+    @staticmethod
+    def antidiagonal_scatter(x,_H, _W,add_length):
+        x = x.transpose(1, 2)
+        B, H, C = x.shape
+        # 把反斜向元素拼接起来的一维向量还原为最初的矩阵形式
+        B, C, H, W = B, C,_H, _W
+        shift = torch.arange(H, device=x.device).unsqueeze(1)  # 创建一个列向量[H, 1]
+        index = (torch.arange(W, device=x.device) - shift) % W  # 利用广播创建索引矩阵[H, W]
+        expanded_index = index.unsqueeze(0).unsqueeze(0).expand(B, C, -1, -1)
+        # 初始化一个与原始张量形状相同、元素全为0的张量
+        result_tensor = torch.zeros(B, C, H, W, device=x.device, dtype=x.dtype)
+        # 将平铺的张量重新变形为[B, C, W, H]，因为操作是沿最后一个维度收集的，需要调整形状并交换维度
+        tensor_reshaped = x.reshape(B, C, W, H).transpose(-1, -2)
+        # 使用scatter_将元素根据索引放回原位
+        result_tensor.scatter_(3, expanded_index, tensor_reshaped)
+        result_tensor = result_tensor.flatten(2, 3).transpose(1, 2)
+        if add_length > 0:
+            result_tensor = result_tensor[:, :-add_length]
+        result_tensor = result_tensor.transpose(1, 2)
+        return result_tensor
+
+
+    @staticmethod
+    def diagonal_gather(x, _H, _W):
+        B, H, C = x.shape
+        x = x.transpose(1, 2).view(B, C, _H, _W)
+        # 取出矩阵所有反斜向的元素并拼接
+        B, C, H, W = x.size()
+        shift = torch.arange(H, device=x.device).unsqueeze(1)  # 创建一个列向量[H, 1]
+        index = (shift + torch.arange(W, device=x.device)) % W  # 利用广播创建索引矩阵[H, W]
+        # 扩展索引以适应B和C维度
+        expanded_index = index.unsqueeze(0).unsqueeze(0).expand(B, C, -1, -1)
+        # 使用gather进行索引选择
+        x   = x.gather(3, expanded_index).transpose(-1, -2).reshape(B, C, H * W)
         return x
 
 
-class SRMamba(nn.Module):
+    @staticmethod
+    def diagonal_scatter(x,_H, _W,add_length):
+        x = x.transpose(1, 2)
+        B, H, C = x.shape
+        # 把斜向元素拼接起来的一维向量还原为最初的矩阵形式
+        B, C, H, W = B, C,_H, _W
+        shift = torch.arange(H, device=x.device).unsqueeze(1)  # 创建一个列向量[H, 1]
+        index = (shift + torch.arange(W, device=x.device)) % W  # 利用广播创建索引矩阵[H, W]
+        # 扩展索引以适应B和C维度
+        expanded_index = index.unsqueeze(0).unsqueeze(0).expand(B, C, -1, -1)
+        # 创建一个空的张量来存储反向散布的结果
+        result_tensor = torch.zeros(B, C, H, W, device=x.device, dtype=x.dtype)
+        # 将平铺的张量重新变形为[B, C, H, W]，考虑到需要使用transpose将H和W调换
+        tensor_reshaped = x.reshape(B, C, W, H).transpose(-1, -2)
+        # 使用scatter_根据expanded_index将元素放回原位
+        result_tensor.scatter_(3, expanded_index, tensor_reshaped)
+        result_tensor = result_tensor.flatten(2, 3).transpose(1, 2)
+        if add_length > 0:
+            result_tensor = result_tensor[:, :-add_length]
+        result_tensor = result_tensor.transpose(1, 2)
+        return result_tensor
+
+
+    @staticmethod
+    def vet_gather(x, _H, _W):
+        B, H, C = x.shape
+        x = x.transpose(1, 2).view(B, C, _H, _W)
+        x = x.transpose(dim0=2, dim1=3).flatten(2, 3)
+        #print(x.shape)
+        return x
+    @staticmethod
+    def vet_scatter(x,_H, _W,add_length):
+        x = x.transpose(1, 2)
+        B, H, C = x.shape
+        # 把反斜向元素拼接起来的一维向量还原为最初的矩阵形式
+        B, C, H, W = B, C,_H, _W
+
+        x = x.transpose(1, 2).view(B, C, _H, _W)
+        x = x.transpose(dim0=3, dim1=2).flatten(2, 3).transpose(1, 2)
+        if add_length > 0:
+            x = x[:, :-add_length]
+        x = x.transpose(1, 2)
+        #print(x.shape,"xv")
+        return x
+
+
+class FPMamba(nn.Module):
     def __init__(
         self,
         d_model,
         d_state=16,
         d_conv=4,
-        expand=2,
+        expand=4,
         dt_rank="auto",
         dt_min=0.001,
         dt_max=0.1,
@@ -105,6 +205,26 @@ class SRMamba(nn.Module):
             **factory_kwargs,
         )
 
+        self.conv1d_c = nn.Conv1d(
+            in_channels=self.d_inner,
+            out_channels=self.d_inner,
+            bias=conv_bias,
+            kernel_size=d_conv,
+            groups=self.d_inner,
+            padding=d_conv - 1,
+            **factory_kwargs,
+        )
+
+        self.conv1d_dd = nn.Conv1d(
+            in_channels=self.d_inner,
+            out_channels=self.d_inner,
+            bias=conv_bias,
+            kernel_size=d_conv,
+            groups=self.d_inner,
+            padding=d_conv - 1,
+            **factory_kwargs,
+        )
+
         self.activation = "silu"
         self.act = nn.SiLU()
 
@@ -115,8 +235,20 @@ class SRMamba(nn.Module):
             self.d_inner, self.dt_rank + self.d_state * 2, bias=False, **factory_kwargs
         )
 
+        self.x_proj_c = nn.Linear(
+            self.d_inner, self.dt_rank + self.d_state * 2, bias=False, **factory_kwargs
+        )
+
+        self.x_proj_dd = nn.Linear(
+            self.d_inner, self.dt_rank + self.d_state * 2, bias=False, **factory_kwargs
+        )
+
+
         self.dt_proj = nn.Linear(self.dt_rank, self.d_inner, bias=True, **factory_kwargs)
         self.dt_proj_b = nn.Linear(self.dt_rank, self.d_inner, bias=True, **factory_kwargs)
+        self.dt_proj_c = nn.Linear(self.dt_rank, self.d_inner, bias=True, **factory_kwargs)
+        self.dt_proj_dd = nn.Linear(self.dt_rank, self.d_inner, bias=True, **factory_kwargs)
+
 
         # Initialize special dt projection to preserve variance at initialization
         dt_init_std = self.dt_rank**-0.5 * dt_scale
@@ -142,6 +274,9 @@ class SRMamba(nn.Module):
         # Our initialization would set all Linear.bias to zero, need to mark this one as _no_reinit
         self.dt_proj.bias._no_reinit = True
         self.dt_proj_b.bias._no_reinit = True  # ?
+        self.dt_proj_c.bias._no_reinit = True
+        self.dt_proj_dd.bias._no_reinit = True  # ?
+
 
         # S4D real initialization
         A = repeat(
@@ -160,23 +295,52 @@ class SRMamba(nn.Module):
         ).contiguous()
         A_b_log = torch.log(A_b)  # Keep A_b_log in fp32
         self.A_b_log = nn.Parameter(A_b_log)
-        self.A_b_log._no_weight_decay = True 
+        self.A_b_log._no_weight_decay = True
+
+        A_c = repeat(
+            torch.arange(1, self.d_state + 1, dtype=torch.float32, device=device),
+            "n -> d n",
+            d=self.d_inner,
+        ).contiguous()
+        A_c_log = torch.log(A_c)  # Keep A_c_log in fp32
+        self.A_c_log = nn.Parameter(A_c_log)
+        self.A_c_log._no_weight_decay = True
+
+        A_dd = repeat(
+            torch.arange(1, self.d_state + 1, dtype=torch.float32, device=device),
+            "n -> d n",
+            d=self.d_inner,
+        ).contiguous()
+        A_dd_log = torch.log(A_dd)  # Keep A_b_log in fp32
+        self.A_dd_log = nn.Parameter(A_dd_log)
+        self.A_dd_log._no_weight_decay = True
 
         # D "skip" parameter
         self.D = nn.Parameter(torch.ones(self.d_inner, device=device))  # Keep in fp32
         self.D._no_weight_decay = True
         self.D_b = nn.Parameter(torch.ones(self.d_inner, device=device))  # Keep in fp32
         self.D_b._no_weight_decay = True
+        self.D_c = nn.Parameter(torch.ones(self.d_inner, device=device))  # Keep in fp32
+        self.D_c._no_weight_decay = True
+        self.D_dd = nn.Parameter(torch.ones(self.d_inner, device=device))  # Keep in fp32
+        self.D_dd._no_weight_decay = True
 
         self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=bias, **factory_kwargs)
 
-    def forward(self, hidden_states, inference_params=None, rate=10):
+    def forward(self, hidden_states, inference_params=None):
         """
         hidden_states: (B, L, D)
         Returns: same shape as hidden_states
         """
+        #print(hidden_states.shape)
         batch, seqlen, dim = hidden_states.shape
-        #print(inference_params)
+
+        B, M, _ = hidden_states.shape
+
+        shuffle_indices = torch.randperm(M)
+        hidden_states = hidden_states[:, shuffle_indices, :]
+
+
         conv_state, ssm_state = None, None
         if inference_params is not None:
             conv_state, ssm_state = self._get_states_from_cache(inference_params, batch)
@@ -194,14 +358,12 @@ class SRMamba(nn.Module):
         if self.in_proj.bias is not None:
             xz = xz + rearrange(self.in_proj.bias.to(dtype=xz.dtype), "d -> d 1")
 
-
-        #print(xz.shape)
-
-
-
-
         A = -torch.exp(self.A_log.float())  # (d_inner, d_state)
         A_b = -torch.exp(self.A_b_log.float())
+        A_c = -torch.exp(self.A_c_log.float())
+        A_dd = -torch.exp(self.A_dd_log.float())
+
+
         # In the backward pass we write dx and dz next to each other to avoid torch.cat
         if self.use_fast_path and inference_params is None:  # Doesn't support outputting the states
             out = mamba_inner_fn_no_out_proj(
@@ -217,9 +379,20 @@ class SRMamba(nn.Module):
                 delta_bias=self.dt_proj.bias.float(),
                 delta_softplus=True,
             )
+
+
             # 直接末尾补零并转置: TMamba
             N, C, L = xz.shape
-            xz_b = TransposeTokenReEmbedding.transpose_normal_padding(xz, rate=rate)
+
+            x = xz.transpose(1, 2)
+            #print(x)
+            B, H, C = x.shape
+            _H, _W = int(np.ceil(np.sqrt(H))), int(np.ceil(np.sqrt(H)))
+            add_length = _H * _W - H
+            x = torch.cat([x, x[:, :add_length, :]], dim=1)  # [B, N, 512]
+            xz_b = TransposeTokenReEmbedding.antidiagonal_gather(x,_H, _W)
+            #print(xz_b.shape,"xz_b")
+
             out_b = mamba_inner_fn_no_out_proj(
                     xz_b,
                     self.conv1d_b.weight,
@@ -233,16 +406,57 @@ class SRMamba(nn.Module):
                     delta_bias=self.dt_proj_b.bias.float(),
                     delta_softplus=True,
                 )
+            #out_c = out_b
             # 将序列转置，并删除padding的位置
-            out_b = TransposeTokenReEmbedding.transpose_remove_padding(out_b, rate=rate, length=L)
-            out = F.linear(rearrange(out + out_b, "b d l -> b l d"), self.out_proj.weight, self.out_proj.bias)
+            out_b = TransposeTokenReEmbedding.antidiagonal_scatter(out_b,_H, _W,add_length)
+
+            xz_c = TransposeTokenReEmbedding.diagonal_gather(x, _H, _W)
+            #print(xz_c.shape, "xz_c")
+            out_c = mamba_inner_fn_no_out_proj(
+                xz_c,
+                self.conv1d_c.weight,
+                self.conv1d_c.bias,
+                self.x_proj_c.weight,
+                self.dt_proj_c.weight,
+                A_c,
+                None,
+                None,
+                self.D_c.float(),
+                delta_bias=self.dt_proj_c.bias.float(),
+                delta_softplus=True,
+            )
+            #print(out_c.shape, "out_c")
+            out_c = TransposeTokenReEmbedding.diagonal_scatter(out_c,_H, _W,add_length)
 
 
 
+            xz_v = TransposeTokenReEmbedding.vet_gather(x,_H, _W)
+            #print(xz_v.shape, "xz_v")
+            out_dd = mamba_inner_fn_no_out_proj(
+                xz_v,
+                self.conv1d_dd.weight,
+                self.conv1d_dd.bias,
+                self.x_proj_dd.weight,
+                self.dt_proj_dd.weight,
+                A_dd,
+                None,
+                None,
+                self.D_dd.float(),
+                delta_bias=self.dt_proj_dd.bias.float(),
+                delta_softplus=True,
+            )
+            #print(out_c.shape, "out_c")
+            out_dd = TransposeTokenReEmbedding.vet_scatter(out_dd, _H, _W, add_length)
+
+            #print(out.shape,out_b.shape,out_c.shape,out_dd.shape,"out.shape,out_b.shape")
+            out = out[:,:, torch.argsort(shuffle_indices)]
+            out_b = out_b[:,:,  torch.argsort(shuffle_indices)]
+            out_c = out_c[:,:,  torch.argsort(shuffle_indices)]
+            out_dd = out_dd[:,:,  torch.argsort(shuffle_indices)]
 
 
-
-
+            out = F.linear(rearrange(out + out_b + out_c + out_dd, "b d l -> b l d"), self.out_proj.weight, self.out_proj.bias)
+            #print(out.shape,"out")
 
 
 
@@ -253,7 +467,8 @@ class SRMamba(nn.Module):
         else:
             # x, z拆分用于两个分支的聚合
             x, z = xz.chunk(2, dim=1)
-            print(x.shape,z.shape)
+
+
             x_b = x.flip([-1])
             # Compute short convolution
             if conv_state is not None:
@@ -279,6 +494,8 @@ class SRMamba(nn.Module):
                     activation=self.activation,
                 )
 
+
+
             # We're careful here about the layout, to avoid extra transposes.
             # We want dt to have d as the slowest moving dimension
             # and L as the fastest moving dimension, since those are what the ssm_scan kernel expects.
@@ -290,12 +507,18 @@ class SRMamba(nn.Module):
             B = rearrange(B, "(b l) dstate -> b dstate l", l=seqlen).contiguous()
             C = rearrange(C, "(b l) dstate -> b dstate l", l=seqlen).contiguous()
 
+
+
+
             x_dbl_b = self.x_proj_b(rearrange(x_b, "b d l -> (b l) d"))  # (bl d)
             dt_b, B_b, C_b = torch.split(x_dbl_b, [self.dt_rank, self.d_state, self.d_state], dim=-1)
             dt_b = self.dt_proj_b.weight @ dt_b.t()
             dt_b = rearrange(dt_b, "d (b l) -> b d l", l=seqlen)
             B_b = rearrange(B_b, "(b l) dstate -> b dstate l", l=seqlen).contiguous()
             C_b = rearrange(C_b, "(b l) dstate -> b dstate l", l=seqlen).contiguous()
+
+
+
             assert self.activation in ["silu", "swish"]
             y = selective_scan_fn(
                 x,
@@ -321,6 +544,8 @@ class SRMamba(nn.Module):
                 delta_softplus=True,
                 return_last_state=ssm_state is not None,
             )
+
+
             if ssm_state is not None:
                 y, last_state = y
                 ssm_state.copy_(last_state)

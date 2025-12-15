@@ -11,11 +11,11 @@ import math
 import numpy as np
 from mamba_ssm import Mamba
 from einops import rearrange, repeat, einsum
-from modules.four_path_mamba_v2.mamba.mamba_ssm import SRMamba
-from modules.four_path_mamba_v2.mamba.mamba_ssm.modules.four_path_mamba import FPMamba
-from modules.four_path_mamba_v2.mamba.mamba_ssm.modules.bimamba import BiMamba
-from modules.four_path_mamba_v2.mamba.mamba_ssm.modules.mamba_simple import Mamba
-from modules.four_path_mamba_v2.torch_wavelets import IDWT_2D, DWT_2D
+from modules.my_model.mamba.mamba_ssm import SRMamba
+from modules.my_model.mamba.mamba_ssm.modules.four_path_mamba import FPMamba
+from modules.my_model.mamba.mamba_ssm.modules.bimamba import BiMamba
+from modules.my_model.mamba.mamba_ssm.modules.mamba_simple import Mamba
+from modules.my_model.torch_wavelets import IDWT_2D, DWT_2D
 
 
 class FFN(nn.Module):

@@ -10,7 +10,7 @@ from torch import Tensor
 
 from einops import rearrange, repeat
 
-from modules.four_path_mamba_v2.mamba.mamba_ssm.ops.selective_scan_interface import selective_scan_fn, mamba_inner_fn, mamba_inner_fn_no_out_proj
+from modules.my_model.mamba.mamba_ssm.ops.selective_scan_interface import selective_scan_fn, mamba_inner_fn, mamba_inner_fn_no_out_proj
 
 try:
     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -53,7 +53,7 @@ class TransposeTokenReEmbedding:
         return x
 
 
-class BiMamba(nn.Module):
+class SRMamba(nn.Module):
     def __init__(
         self,
         d_model,
@@ -176,19 +176,7 @@ class BiMamba(nn.Module):
         Returns: same shape as hidden_states
         """
         batch, seqlen, dim = hidden_states.shape
-
-        #为CPU设置种子用于生成随机数，以使得结果是确定的
-        # torch.manual_seed(2025)
-        # torch.cuda.manual_seed(2025)
-        # torch.cuda.manual_seed_all(2025)
-
-
-        # B, M, _ = hidden_states.shape
-        #
-        # shuffle_indices = torch.randperm(M)
-        # hidden_states = hidden_states[:, shuffle_indices, :]
-
-
+        #print(inference_params)
         conv_state, ssm_state = None, None
         if inference_params is not None:
             conv_state, ssm_state = self._get_states_from_cache(inference_params, batch)
@@ -205,6 +193,12 @@ class BiMamba(nn.Module):
         )
         if self.in_proj.bias is not None:
             xz = xz + rearrange(self.in_proj.bias.to(dtype=xz.dtype), "d -> d 1")
+
+
+        #print(xz.shape)
+
+
+
 
         A = -torch.exp(self.A_log.float())  # (d_inner, d_state)
         A_b = -torch.exp(self.A_b_log.float())
@@ -223,9 +217,9 @@ class BiMamba(nn.Module):
                 delta_bias=self.dt_proj.bias.float(),
                 delta_softplus=True,
             )
-            # 直接反转:BiMamba
-            xz_b = xz.flip([-1])
-
+            # 直接末尾补零并转置: TMamba
+            N, C, L = xz.shape
+            xz_b = TransposeTokenReEmbedding.transpose_normal_padding(xz, rate=rate)
             out_b = mamba_inner_fn_no_out_proj(
                     xz_b,
                     self.conv1d_b.weight,
@@ -239,15 +233,14 @@ class BiMamba(nn.Module):
                     delta_bias=self.dt_proj_b.bias.float(),
                     delta_softplus=True,
                 )
-            # 将序列反转回来构建:BiMamba
-            out_b = out_b.flip([-1])
-
-            # out = out[:, :, torch.argsort(shuffle_indices)]
-            # out_b = out_b[:, :, torch.argsort(shuffle_indices)]
-
-
-
+            # 将序列转置，并删除padding的位置
+            out_b = TransposeTokenReEmbedding.transpose_remove_padding(out_b, rate=rate, length=L)
             out = F.linear(rearrange(out + out_b, "b d l -> b l d"), self.out_proj.weight, self.out_proj.bias)
+
+
+
+
+
 
 
 
@@ -260,6 +253,7 @@ class BiMamba(nn.Module):
         else:
             # x, z拆分用于两个分支的聚合
             x, z = xz.chunk(2, dim=1)
+            print(x.shape,z.shape)
             x_b = x.flip([-1])
             # Compute short convolution
             if conv_state is not None:
@@ -332,7 +326,7 @@ class BiMamba(nn.Module):
                 ssm_state.copy_(last_state)
             y = rearrange(y, "b d l -> b l d")
             y_b = rearrange(y_b, "b d l -> b l d")
-            out = self.out_proj(y_b + y_f)
+            out = self.out_proj(y_b + y)
         return out
 
     def step(self, hidden_states, conv_state, ssm_state):

@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from einops import rearrange, reduce
 
-from modules.four_path_mamba_v2.mambafft_4_path import Block_mamba
+from modules.my_model.mambafft_4_path import Block_mamba
 
 
 # helper functions

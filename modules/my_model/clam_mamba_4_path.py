@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from modules.four_path_mamba_v2.mambafft_4_path import Block_mamba, Block_valia_mamba, Block_sr_mamba, Block_bi_mamba, \
+from modules.my_model.mambafft_4_path import Block_mamba, Block_valia_mamba, Block_sr_mamba, Block_bi_mamba, \
     Block_four_mamba, Block_mamba_with_fusion
 from modules.topk.svm import SmoothTop1SVM
 

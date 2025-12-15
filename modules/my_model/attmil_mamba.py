@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 
-from modules.four_path_mamba_v2.mambafft_4_path import Block_mamba
+from modules.my_model.mambafft_4_path import Block_mamba
 
 
 def initialize_weights(module):

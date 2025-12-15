@@ -269,7 +269,7 @@ class TCGA_Dataset_Graph(Dataset):
 
 
 if __name__ == '__main__':
-    from modules.four_path_mamba_v2.MamMIL2GIA import MamMIL2GIA
+    from modules.my_model.MamMIL2GIA import MamMIL2GIA
     #from torch.utils.data import DataLoader, RandomSampler
     from torch_geometric.loader import DataLoader
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
